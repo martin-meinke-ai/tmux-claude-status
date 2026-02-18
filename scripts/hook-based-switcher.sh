@@ -128,12 +128,10 @@ get_sessions_with_status() {
         elif [ -n "$claude_status" ] && is_ssh_session "$name"; then
             # SSH session with remote status
             has_claude=true
-        else
-            # Clean up stale status file if Claude is not running
-            if [ -n "$claude_status" ] && ! is_ssh_session "$name"; then
-                rm -f "$STATUS_DIR/${name}.status" 2>/dev/null
-                rm -f "$STATUS_DIR/${name}.unread" 2>/dev/null
-            fi
+        elif [ -n "$claude_status" ]; then
+            # Has status file but Claude not currently running - keep the status
+            # This allows us to show "done" and "unread" states properly
+            has_claude=true
         fi
         
         if [ "$has_claude" = true ]; then
@@ -264,22 +262,25 @@ perform_full_reset() {
     # Clear temp files
     rm -f "$STATUS_DIR"/.*.status.tmp 2>/dev/null
     
-    # Check each status file and only remove if Claude is not running in that session
+    # Note: We no longer remove status files just because Claude isn't running
+    # This preserves "done" and "unread" states properly
+    # Only remove truly stale files (sessions that no longer exist)
     for status_file in "$STATUS_DIR"/*.status; do
         [ ! -f "$status_file" ] && continue
-        
+
         # Extract session name from filename
         session_name=$(basename "$status_file" .status)
-        
+
         # Skip remote status files
         if [[ "$session_name" == *"-remote" ]]; then
             continue
         fi
-        
-        # Check if Claude is actually running in this session
-        if ! has_claude_in_session "$session_name"; then
-            # Claude is not running, safe to remove stale status
+
+        # Only remove if the tmux session doesn't exist at all
+        if ! tmux has-session -t "$session_name" 2>/dev/null; then
             rm -f "$status_file"
+            rm -f "$STATUS_DIR/${session_name}.unread"
+            rm -f "$STATUS_DIR/${session_name}.branch"
         fi
     done
     
