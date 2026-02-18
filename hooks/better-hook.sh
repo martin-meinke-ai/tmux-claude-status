@@ -41,13 +41,33 @@ if [ -n "$TMUX" ] || [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
         STATUS_FILE="$STATUS_DIR/${TMUX_SESSION}.status"
         REMOTE_STATUS_FILE="$STATUS_DIR/${TMUX_SESSION}-remote.status"
         WAIT_FILE="$STATUS_DIR/wait/${TMUX_SESSION}.wait"
-        
+        BRANCH_FILE="$STATUS_DIR/${TMUX_SESSION}.branch"
+        REMOTE_BRANCH_FILE="$STATUS_DIR/${TMUX_SESSION}-remote.branch"
+
+        # Get current git branch if in a git repository
+        GIT_BRANCH=""
+        if command -v git >/dev/null 2>&1; then
+            GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        fi
+
+        # Save branch information if we have it
+        if [ -n "$GIT_BRANCH" ]; then
+            echo "$GIT_BRANCH" > "$BRANCH_FILE"
+            if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
+                echo "$GIT_BRANCH" > "$REMOTE_BRANCH_FILE" 2>/dev/null
+            fi
+        fi
+
         case "$HOOK_TYPE" in
             "UserPromptSubmit"|"PreToolUse")
                 # User submitted a prompt or Claude is calling a tool - cancel wait mode if active
                 if [ -f "$WAIT_FILE" ]; then
                     rm -f "$WAIT_FILE"  # Remove wait timer
                 fi
+                # Clear unread marker when user interacts
+                rm -f "$STATUS_DIR/${TMUX_SESSION}.unread" 2>/dev/null
+                rm -f "$STATUS_DIR/${TMUX_SESSION}-remote.unread" 2>/dev/null
+
                 echo "working" > "$STATUS_FILE"
                 # Only write to remote status file if we're in an SSH session
                 if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
@@ -56,7 +76,20 @@ if [ -n "$TMUX" ] || [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                 ;;
             "Stop")
                 # Claude has finished responding (SubagentStop excluded - subagents finishing doesn't mean the main agent is done)
+                # Check previous status to see if we're transitioning from working to done
+                PREV_STATUS=$(cat "$STATUS_FILE" 2>/dev/null || echo "")
                 echo "done" > "$STATUS_FILE"
+
+                # Mark as unread if we transitioned from working to done
+                # and user is not currently in this session
+                CURRENT_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+                if [ "$PREV_STATUS" = "working" ] && [ "$CURRENT_SESSION" != "$TMUX_SESSION" ]; then
+                    touch "$STATUS_DIR/${TMUX_SESSION}.unread"
+                    if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
+                        touch "$STATUS_DIR/${TMUX_SESSION}-remote.unread" 2>/dev/null
+                    fi
+                fi
+
                 # Only write to remote status file if we're in an SSH session
                 if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                     echo "done" > "$REMOTE_STATUS_FILE" 2>/dev/null
@@ -64,7 +97,20 @@ if [ -n "$TMUX" ] || [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                 ;;
             "Notification")
                 # Claude is waiting for user input
+                # Check previous status to see if we're transitioning from working to done
+                PREV_STATUS=$(cat "$STATUS_FILE" 2>/dev/null || echo "")
                 echo "done" > "$STATUS_FILE"
+
+                # Mark as unread if we transitioned from working to done
+                # and user is not currently in this session
+                CURRENT_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+                if [ "$PREV_STATUS" = "working" ] && [ "$CURRENT_SESSION" != "$TMUX_SESSION" ]; then
+                    touch "$STATUS_DIR/${TMUX_SESSION}.unread"
+                    if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
+                        touch "$STATUS_DIR/${TMUX_SESSION}-remote.unread" 2>/dev/null
+                    fi
+                fi
+
                 # Only write to remote status file if we're in an SSH session
                 if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                     echo "done" > "$REMOTE_STATUS_FILE" 2>/dev/null

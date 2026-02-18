@@ -47,14 +47,14 @@ get_ssh_host() {
 # Function to get Claude status from hook files
 get_claude_status() {
     local session="$1"
-    
+
     # Check for remote status file first (for SSH sessions)
     local remote_status="$STATUS_DIR/${session}-remote.status"
     if [ -f "$remote_status" ]; then
         cat "$remote_status" 2>/dev/null
         return
     fi
-    
+
     # Check local status files
     local status_file="$STATUS_DIR/${session}.status"
     if [ -f "$status_file" ]; then
@@ -64,27 +64,65 @@ get_claude_status() {
     fi
 }
 
+# Function to get git branch for session
+get_git_branch() {
+    local session="$1"
+
+    # Check for remote branch file first (for SSH sessions)
+    local remote_branch="$STATUS_DIR/${session}-remote.branch"
+    if [ -f "$remote_branch" ]; then
+        cat "$remote_branch" 2>/dev/null
+        return
+    fi
+
+    # Check local branch files
+    local branch_file="$STATUS_DIR/${session}.branch"
+    if [ -f "$branch_file" ]; then
+        cat "$branch_file" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
+# Function to check if session has unread status
+is_unread() {
+    local session="$1"
+
+    # Check for remote unread file first (for SSH sessions)
+    if [ -f "$STATUS_DIR/${session}-remote.unread" ]; then
+        return 0
+    fi
+
+    # Check local unread file
+    if [ -f "$STATUS_DIR/${session}.unread" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
 # Get all sessions with formatted output
 get_sessions_with_status() {
     local working_sessions=()
+    local unread_sessions=()
     local done_sessions=()
     local wait_sessions=()
     local no_claude_sessions=()
-    
+
     # Collect all sessions into arrays
     while IFS=: read -r name windows attached; do
         local formatted_line=""
-        
+
         # Check if it's an SSH session
         local ssh_indicator=""
         if is_ssh_session "$name"; then
             ssh_indicator="[🌐 ssh]"
         fi
-        
+
         # Check if Claude is present (local) or if we have remote status (SSH)
         local claude_status=$(get_claude_status "$name")
         local has_claude=false
-        
+
         if has_claude_in_session "$name"; then
             has_claude=true
         elif [ -n "$claude_status" ] && is_ssh_session "$name"; then
@@ -94,18 +132,32 @@ get_sessions_with_status() {
             # Clean up stale status file if Claude is not running
             if [ -n "$claude_status" ] && ! is_ssh_session "$name"; then
                 rm -f "$STATUS_DIR/${name}.status" 2>/dev/null
+                rm -f "$STATUS_DIR/${name}.unread" 2>/dev/null
             fi
         fi
         
         if [ "$has_claude" = true ]; then
             # Default to "done" if no status file exists
             [ -z "$claude_status" ] && claude_status="done"
-            
+
+            # Get git branch for this session
+            local git_branch=$(get_git_branch "$name")
+            local branch_indicator=""
+            if [ -n "$git_branch" ]; then
+                branch_indicator="[🌿 $git_branch]"
+            fi
+
+            # Check if session is unread (Claude finished but user hasn't visited)
+            local is_unread_session=false
+            if is_unread "$name" && [ "$claude_status" = "done" ]; then
+                is_unread_session=true
+            fi
+
             if [ "$claude_status" = "working" ]; then
                 if [ -n "$ssh_indicator" ]; then
-                    formatted_line=$(printf "%-20s %2s windows %-12s %s [⚡ working]" "$name" "$windows" "$attached" "$ssh_indicator")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s %s [⚡ working]" "$name" "$windows" "$attached" "$ssh_indicator" "$branch_indicator")
                 else
-                    formatted_line=$(printf "%-20s %2s windows %-12s [⚡ working]" "$name" "$windows" "$attached")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s [⚡ working]" "$name" "$windows" "$attached" "$branch_indicator")
                 fi
                 working_sessions+=("$formatted_line")
             elif [ "$claude_status" = "wait" ]; then
@@ -122,16 +174,24 @@ get_sessions_with_status() {
                     fi
                 fi
                 if [ -n "$ssh_indicator" ]; then
-                    formatted_line=$(printf "%-20s %2s windows %-12s %s [⏳ wait] %s" "$name" "$windows" "$attached" "$ssh_indicator" "$wait_info")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s %s [⏳ wait] %s" "$name" "$windows" "$attached" "$ssh_indicator" "$branch_indicator" "$wait_info")
                 else
-                    formatted_line=$(printf "%-20s %2s windows %-12s [⏳ wait] %s" "$name" "$windows" "$attached" "$wait_info")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s [⏳ wait] %s" "$name" "$windows" "$attached" "$branch_indicator" "$wait_info")
                 fi
                 wait_sessions+=("$formatted_line")
+            elif [ "$is_unread_session" = true ]; then
+                # Unread session - Claude finished but user hasn't visited
+                if [ -n "$ssh_indicator" ]; then
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s %s [📬 unread]" "$name" "$windows" "$attached" "$ssh_indicator" "$branch_indicator")
+                else
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s [📬 unread]" "$name" "$windows" "$attached" "$branch_indicator")
+                fi
+                unread_sessions+=("$formatted_line")
             else
                 if [ -n "$ssh_indicator" ]; then
-                    formatted_line=$(printf "%-20s %2s windows %-12s %s [✓ done]" "$name" "$windows" "$attached" "$ssh_indicator")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s %s [✓ done]" "$name" "$windows" "$attached" "$ssh_indicator" "$branch_indicator")
                 else
-                    formatted_line=$(printf "%-20s %2s windows %-12s [✓ done]" "$name" "$windows" "$attached")
+                    formatted_line=$(printf "%-20s %2s windows %-12s %s [✓ done]" "$name" "$windows" "$attached" "$branch_indicator")
                 fi
                 done_sessions+=("$formatted_line")
             fi
@@ -146,30 +206,37 @@ get_sessions_with_status() {
     done < <(tmux list-sessions -F "#{session_name}:#{session_windows}:#{?session_attached,(attached),}" 2>/dev/null || echo "")
     
     # Output grouped sessions with separators
-    
+
     # Working sessions
     if [ ${#working_sessions[@]} -gt 0 ]; then
         echo -e "\033[1;33m━━━ ⚡ WORKING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
         printf '%s\n' "${working_sessions[@]}"
     fi
-    
+
+    # Unread sessions (Claude finished but not visited)
+    if [ ${#unread_sessions[@]} -gt 0 ]; then
+        [ ${#working_sessions[@]} -gt 0 ] && echo
+        echo -e "\033[1;35m━━━ 📬 UNREAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        printf '%s\n' "${unread_sessions[@]}"
+    fi
+
     # Done sessions
     if [ ${#done_sessions[@]} -gt 0 ]; then
-        [ ${#working_sessions[@]} -gt 0 ] && echo
+        [ ${#working_sessions[@]} -gt 0 ] || [ ${#unread_sessions[@]} -gt 0 ] && echo
         echo -e "\033[1;32m━━━ ✓ DONE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
         printf '%s\n' "${done_sessions[@]}"
     fi
-    
+
     # Wait sessions
     if [ ${#wait_sessions[@]} -gt 0 ]; then
-        [ ${#working_sessions[@]} -gt 0 ] || [ ${#done_sessions[@]} -gt 0 ] && echo
+        [ ${#working_sessions[@]} -gt 0 ] || [ ${#unread_sessions[@]} -gt 0 ] || [ ${#done_sessions[@]} -gt 0 ] && echo
         echo -e "\033[1;36m━━━ ⏳ WAIT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
         printf '%s\n' "${wait_sessions[@]}"
     fi
-    
+
     # No Claude sessions
     if [ ${#no_claude_sessions[@]} -gt 0 ]; then
-        [ ${#working_sessions[@]} -gt 0 ] || [ ${#done_sessions[@]} -gt 0 ] || [ ${#wait_sessions[@]} -gt 0 ] && echo
+        [ ${#working_sessions[@]} -gt 0 ] || [ ${#unread_sessions[@]} -gt 0 ] || [ ${#done_sessions[@]} -gt 0 ] || [ ${#wait_sessions[@]} -gt 0 ] && echo
         echo -e "\033[1;90m━━━ NO CLAUDE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
         printf '%s\n' "${no_claude_sessions[@]}"
     fi
@@ -253,5 +320,8 @@ selected=$(echo "$sessions_with_reminder" | fzf \
 # Switch to selected session (skip separator lines)
 if [ -n "$selected" ] && ! echo "$selected" | grep -q "━━━"; then
     session_name=$(echo "$selected" | awk '{print $1}')
+    # Clear unread marker when switching to the session
+    rm -f "$STATUS_DIR/${session_name}.unread" 2>/dev/null
+    rm -f "$STATUS_DIR/${session_name}-remote.unread" 2>/dev/null
     tmux switch-client -t "$session_name"
 fi
