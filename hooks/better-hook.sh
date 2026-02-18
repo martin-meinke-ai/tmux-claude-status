@@ -81,9 +81,9 @@ if [ -n "$TMUX" ] || [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                 echo "done" > "$STATUS_FILE"
 
                 # Mark as unread if we transitioned from working to done
-                # and user is not currently in this session
-                CURRENT_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
-                if [ "$PREV_STATUS" = "working" ] && [ "$CURRENT_SESSION" != "$TMUX_SESSION" ]; then
+                # and this session is not currently attached (user is viewing a different session)
+                IS_ATTACHED=$(tmux list-sessions -F "#{session_name}:#{?session_attached,attached,}" 2>/dev/null | grep "^${TMUX_SESSION}:attached$")
+                if [ "$PREV_STATUS" = "working" ] && [ -z "$IS_ATTACHED" ]; then
                     touch "$STATUS_DIR/${TMUX_SESSION}.unread"
                     if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                         touch "$STATUS_DIR/${TMUX_SESSION}-remote.unread" 2>/dev/null
@@ -102,9 +102,9 @@ if [ -n "$TMUX" ] || [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                 echo "done" > "$STATUS_FILE"
 
                 # Mark as unread if we transitioned from working to done
-                # and user is not currently in this session
-                CURRENT_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
-                if [ "$PREV_STATUS" = "working" ] && [ "$CURRENT_SESSION" != "$TMUX_SESSION" ]; then
+                # and this session is not currently attached (user is viewing a different session)
+                IS_ATTACHED=$(tmux list-sessions -F "#{session_name}:#{?session_attached,attached,}" 2>/dev/null | grep "^${TMUX_SESSION}:attached$")
+                if [ "$PREV_STATUS" = "working" ] && [ -z "$IS_ATTACHED" ]; then
                     touch "$STATUS_DIR/${TMUX_SESSION}.unread"
                     if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_TTY" ]; then
                         touch "$STATUS_DIR/${TMUX_SESSION}-remote.unread" 2>/dev/null
